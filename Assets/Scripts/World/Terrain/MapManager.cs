@@ -16,6 +16,16 @@ public class MapManager : Singleton<MapManager> {
     private float offsetX = -500.0f;
     private float offsetY = -500.0f;
 
+	/* Visualization variables. */
+
+	public bool showRegionCenters = true;
+	public bool showTriangleGraph = true;
+	public bool showRegionFrontiers = true;
+
+	private List<Vector2> regionCenters = new List<Vector2>();
+	private List<Triangle> voronoiTriangles = new List<Triangle>();
+	private Dictionary<Vector2, List<Edge>> regionBoundaries = new Dictionary<Vector2, List<Edge>>();
+
 	[SerializeField]
 	private GameObject regionPrefab;
 	[SerializeField]
@@ -28,15 +38,28 @@ public class MapManager : Singleton<MapManager> {
 	}
 
 	public void InstantiateRegions() {
+		Debug.Log("Region graph computation started.");
+
+		regionCenters.Clear();
+		voronoiTriangles.Clear();
+		regionBoundaries.Clear();
+
 		JSONNode regionNodes = JSON.Parse(regionJson.text);
 		List<RegionDescriptor> descriptors = JSON.getJsonArray<RegionDescriptor>(regionNodes["regions"].ToString()).ToList();
 
 		BuildVoronoiData(descriptors);
 
+		while (regionParent.childCount != 0) { 
+			DestroyImmediate(regionParent.GetChild(0).gameObject);
+        }
+
 		descriptors.ForEach(descriptor => {
+			/* Instantiation of actual Unity game objects if needed here with all the region informations stored : */
 			Region region = Instantiate(regionPrefab, regionParent).GetComponent<Region>();
 			region.Build(descriptor);
 		});
+
+		Debug.Log("Region graph computation finished.");
 	}
 
 	#region Terrain Calculations
@@ -71,15 +94,12 @@ public class MapManager : Singleton<MapManager> {
     #region Voronoi Calculations
 
     private void BuildVoronoiData(List<RegionDescriptor> descriptors) {
-		Debug.Log("Starting Voronoi calculations.");
-
 		Dictionary<Vector2, RegionDescriptor> regionMap = new Dictionary<Vector2, RegionDescriptor>();
 		descriptors.ForEach(descriptor => regionMap.Add(new Vector2(descriptor.x, descriptor.y), descriptor));
 
 		Dictionary<Vector2, List<Vector2>> adjacentRegions = new Dictionary<Vector2, List<Vector2>>();
-		Dictionary<Vector2, List<Edge>> regionBoundaries = new Dictionary<Vector2, List<Edge>>();
 
-		List<Vector2> points = regionMap.Keys.ToList();
+		regionCenters = regionMap.Keys.ToList();
 
 		/* Triangle englobant. */
 		Vector2 startingA = new Vector2(0.0f, 0.0f);
@@ -88,15 +108,13 @@ public class MapManager : Singleton<MapManager> {
 		Triangle startingTriangle = GetTriangle(startingA, startingB, startingC);
 
 		Dictionary<Edge, List<Triangle>> adjacentTriangles = new Dictionary<Edge, List<Triangle>>();
-		List<Triangle> triangulation = new List<Triangle>();
 
-		GetTriangleEdges(startingTriangle).ForEach(edge => SetTriangleAdjacency(adjacentTriangles, edge, startingTriangle, true));
-		triangulation.Add(startingTriangle);
+		voronoiTriangles.Add(startingTriangle);
 
-		points.ForEach(point => {
+		regionCenters.ForEach(point => {
 			List<Triangle> dirtyTriangles = new List<Triangle>();
 
-			triangulation.ForEach(triangle => {
+			voronoiTriangles.ForEach(triangle => {
 				if (IsPointInsideCircle(triangle.circonscrit, point)) {
 					dirtyTriangles.Add(triangle);
 				}
@@ -113,22 +131,18 @@ public class MapManager : Singleton<MapManager> {
 			});
 
 			dirtyTriangles.ForEach(triangle => {
-				GetTriangleEdges(triangle).ForEach(edge => SetTriangleAdjacency(adjacentTriangles, edge, triangle, false));
-				triangulation.Remove(triangle);
+				voronoiTriangles.Remove(triangle);
 			});
 
 			polygon.ForEach(edge => {
 				Triangle addedTriangle = GetTriangle(edge.from, edge.to, point);
-				GetTriangleEdges(addedTriangle).ForEach(edge => {
-					SetTriangleAdjacency(adjacentTriangles, edge, addedTriangle, true);
-				});
-				triangulation.Add(addedTriangle);
+				voronoiTriangles.Add(addedTriangle);
 			});
 		});
 
 		List<Triangle> invalidTriangles = new List<Triangle>();
 
-		triangulation.ForEach(triangle => {
+		voronoiTriangles.ForEach(triangle => {
 			if (IsVertexFromTriangle(triangle, startingA) || IsVertexFromTriangle(triangle, startingB) || IsVertexFromTriangle(triangle, startingC)) {
 				invalidTriangles.Add(triangle);
 			}
@@ -138,14 +152,42 @@ public class MapManager : Singleton<MapManager> {
 			}
 		});
 
-		invalidTriangles.ForEach(triangle => triangulation.Remove(triangle));
+		invalidTriangles.ForEach(triangle => voronoiTriangles.Remove(triangle));
 
-		/* Triangulation done. */
+		List<Edge> edges = voronoiTriangles.Select(triangle => GetTriangleEdges(triangle)).SelectMany(edge => edge).Distinct().ToList();
 
-		Debug.Log("Voronoi calculations ended.");
+		edges.ForEach(edge => {
+			adjacentTriangles[edge] = voronoiTriangles.Where(triangle => GetTriangleEdges(triangle).Contains(edge)).ToList();
+		});
 
-		points.ForEach(point => {
-			adjacentRegions.Add(point, triangulation
+		regionCenters.ForEach(point => {
+			List<Edge> linkedEdges = edges.Where(edge => edge.from == point || edge.to == point).ToList();
+			regionBoundaries.Add(point, new List<Edge>());
+			linkedEdges.ForEach(edge => {
+				if (adjacentTriangles[edge].Count == 2) {
+					regionBoundaries[point].Add(GetEdge(adjacentTriangles[edge][0].circonscrit.center, adjacentTriangles[edge][1].circonscrit.center));
+				} else {
+					Vector2 edgeCenter = new Vector2((edge.from.x + edge.to.x) / 2f, (edge.from.y + edge.to.y) / 2f);
+					Vector2 mapEdgeIntersection = new Vector2(100.0f, 100.0f);
+					Vector2 direction = IsObtuse(adjacentTriangles[edge][0]) && IsTriangleLongestEdge(adjacentTriangles[edge][0], edge) ? 
+						adjacentTriangles[edge][0].circonscrit.center - edgeCenter : 
+						edgeCenter - adjacentTriangles[edge][0].circonscrit.center;
+
+					GetClosestMapEdgesFromDirection(direction).ToList().ForEach(mapEdge => {
+						Vector2 crossing = GetIntersection(GetEdge(adjacentTriangles[edge][0].circonscrit.center, edgeCenter), mapEdge);
+
+						if (GetDistance(edgeCenter, crossing) < GetDistance(edgeCenter, mapEdgeIntersection)) {
+							mapEdgeIntersection = crossing;
+						}
+					});
+
+					regionBoundaries[point].Add(GetEdge(adjacentTriangles[edge][0].circonscrit.center, mapEdgeIntersection));
+				}
+			});
+		});
+
+		regionCenters.ForEach(point => {
+			adjacentRegions.Add(point, voronoiTriangles
 				.Where(triangle => IsVertexFromTriangle(triangle, point))
 				.Select(triangle => triangle.vertices)
 				.SelectMany(p => p)
@@ -154,91 +196,7 @@ public class MapManager : Singleton<MapManager> {
 				.ToList());
 		});
 
-		List<Triangle> processed = new List<Triangle>();
-
-		points.ForEach(point => {
-			regionBoundaries.Add(point, new List<Edge>());
-			List<Triangle> processed = new List<Triangle>();
-			List<Triangle> regionTriangles = triangulation.Where(triangle => IsVertexFromTriangle(triangle, point)).ToList();
-			regionTriangles.ForEach(triangle => {
-				GetTriangleEdges(triangle).Select(edge => adjacentTriangles[edge]).SelectMany(t => t).Where(t => IsVertexFromTriangle(t, point)).ToList().ForEach(other => {
-					if (!processed.Contains(other)) {
-						regionBoundaries[point].Add(new Edge { from = triangle.circonscrit.center, to = other.circonscrit.center });
-					}
-				});
-				processed.Add(triangle);
-			});
-		});
-
-		points.Where(point => regionBoundaries[point].Any(edge => IsPointOutsideMap(edge.from) || IsPointOutsideMap(edge.to))).ToList().ForEach(point => {
-			List<Edge> overflowingEdges = regionBoundaries[point].Where(edge => IsPointOutsideMap(edge.from) || IsPointOutsideMap(edge.to)).ToList();
-
-			List<Vector2> pointsToLink = new List<Vector2>();
-
-			overflowingEdges.ForEach(edge => {
-				Vector2 pointOut;
-				Vector2 pointIn;
-
-				if (IsPointOutsideMap(edge.from)) {
-					pointOut = edge.from;
-					pointIn = edge.to;
-				} else {
-					pointOut = edge.to;
-					pointIn = edge.from;
-				}
-
-				List<Edge> mapEdgesToCheck = new List<Edge>();
-
-				if (pointOut.x < 0) {
-					mapEdgesToCheck.Add(GetEdge(new Vector2(0.0f, 0.0f), new Vector2(0.0f, 1.0f)));
-				}
-				if (pointOut.x > 1) {
-					mapEdgesToCheck.Add(GetEdge(new Vector2(1.0f, 1.0f), new Vector2(1.0f, 0.0f)));
-				}
-				if (pointOut.y < 0) {
-					mapEdgesToCheck.Add(GetEdge(new Vector2(0.0f, 0.0f), new Vector2(1.0f, 0.0f)));
-				}
-				if (pointOut.y > 1) {
-					mapEdgesToCheck.Add(GetEdge(new Vector2(0.0f, 1.0f), new Vector2(1.0f, 1.0f)));
-				}
-
-				Vector2 newPoint = new Vector2(100.0f, 100.0f);
-
-				mapEdgesToCheck.ForEach(mapEdge => {
-					Vector2 crossing = GetIntersection(edge, mapEdge);
-
-					if (GetDistance(pointIn, crossing) < GetDistance(pointIn, newPoint)) {
-						newPoint = crossing;
-					}
-				});
-
-				Edge result;
-
-				if (IsPointOutsideMap(edge.from)) {
-					result.from = newPoint;
-					result.to = edge.to;
-				} else {
-					result.from = edge.from;
-					result.to = newPoint;
-				}
-
-				regionBoundaries[point].Remove(edge);
-				regionBoundaries[point].Add(result);
-
-				pointsToLink.Add(newPoint);
-			});
-
-			if (GetBorderFromPoint(pointsToLink[0]).Equals(GetBorderFromPoint(pointsToLink[1]))) {
-				regionBoundaries[point].Add(GetEdge(pointsToLink[0], pointsToLink[1]));
-			} else {
-				Vector2 corner = GetIntersection(GetBorderFromPoint(pointsToLink[0]), GetBorderFromPoint(pointsToLink[1]));
-				regionBoundaries[point].Add(GetEdge(pointsToLink[0], corner));
-				regionBoundaries[point].Add(GetEdge(corner, pointsToLink[1]));
-			}
-
-		});
-
-		points.ForEach(point => {
+		regionCenters.ForEach(point => {
 			regionMap[point].center = point;
 			regionMap[point].adjacentRegion = adjacentRegions[point].Select(point => regionMap[point]).ToList();
 			regionMap[point].frontiers = regionBoundaries[point];
@@ -295,21 +253,28 @@ public class MapManager : Singleton<MapManager> {
 		return point.Equals(triangle.vertices[0]) || point.Equals(triangle.vertices[1]) || point.Equals(triangle.vertices[2]);
 	}
 
-	private void SetTriangleAdjacency(Dictionary<Edge, List<Triangle>> adjacencyMap, Edge edge, Triangle triangle, bool adjacent) {
-		if (adjacent) {
-			if (adjacencyMap.ContainsKey(edge)) {
-				adjacencyMap[edge].Add(triangle);
-			} else {
-				adjacencyMap.Add(edge, new List<Triangle> { triangle });
-			}
-		} else {
-			adjacencyMap[edge].Remove(triangle);
-		}
-	}
-
 	private bool IsPointOutsideMap(Vector2 point) {
 		return point.x < 0.0f || point.x > 1.0f || point.y < 0.0f || point.y > 1.0f;
 	}
+
+	private bool IsObtuse(Triangle triangle) {
+		bool result = false;
+		
+		triangle.vertices.ToList().ForEach(vertex => {
+			Vector2 direction1 = triangle.vertices.ToList().Where(v => v != vertex).ToList()[0] - vertex;
+			Vector2 direction2 = triangle.vertices.ToList().Where(v => v != vertex).ToList()[1] - vertex;
+
+			if (Vector2.Angle(direction1, direction2) > 90) {
+				result = true;
+            }
+		});
+
+		return result;
+    }
+
+	private bool IsTriangleLongestEdge(Triangle triangle, Edge edge) {
+		return GetTriangleEdges(triangle).Max(e => GetDistance(e.from, e.to)) == GetDistance(edge.from, edge.to);
+    }
 
 	private Vector2 GetIntersection(Edge e1, Edge e2) {
 		float tmp = (e2.to.x - e2.from.x) * (e1.to.y - e1.from.y) - (e2.to.y - e2.from.y) * (e1.to.x - e1.from.x);
@@ -321,21 +286,55 @@ public class MapManager : Singleton<MapManager> {
 		);
 	}
 
-	private Edge GetBorderFromPoint(Vector2 point) {
-		if (point.x == 0) {
-			return GetEdge(new Vector2(0.0f, 0.0f), new Vector2(0.0f, 1.0f));
-		} else if (point.x == 1) {
-			return GetEdge(new Vector2(1.0f, 1.0f), new Vector2(1.0f, 0.0f));
-		} else if (point.y == 0) {
-			return GetEdge(new Vector2(0.0f, 0.0f), new Vector2(1.0f, 0.0f));
-		} else if (point.y == 1) {
-			return GetEdge(new Vector2(0.0f, 1.0f), new Vector2(1.0f, 1.0f));
+	private List<Edge> GetClosestMapEdgesFromDirection(Vector2 direction) {
+		List<Edge> result = new List<Edge>();
+		
+		if (direction.x >= 0.0f) {
+			result.Add(Edge.EAST_EDGE);
+        } else {
+			result.Add(Edge.WEST_EDGE);
 		}
 
-		return GetEdge(new Vector2(100.0f, 100.0f), new Vector2(200.0f, 200.0f));
+		if (direction.y >= 0.0f) {
+			result.Add(Edge.NORTH_EDGE);
+		} else {
+			result.Add(Edge.SOUTH_EDGE);
+		}
+
+		return result;
 	}
 
-    #endregion
+	#endregion
+
+	private void OnDrawGizmos() {
+		if (showRegionCenters) {
+			Gizmos.color = Color.red;
+
+			regionCenters.ForEach(center => {
+				Gizmos.DrawCube(GetScaledPosition3D(center), new Vector3(5f, 5f, 5f));
+			});
+		}
+
+		if (showTriangleGraph) {
+			Gizmos.color = Color.blue;
+
+			voronoiTriangles.ForEach(triangle => {
+				Gizmos.DrawLine(GetScaledPosition3D(triangle.vertices[0]), GetScaledPosition3D(triangle.vertices[1]));
+				Gizmos.DrawLine(GetScaledPosition3D(triangle.vertices[1]), GetScaledPosition3D(triangle.vertices[2]));
+				Gizmos.DrawLine(GetScaledPosition3D(triangle.vertices[2]), GetScaledPosition3D(triangle.vertices[0]));
+			});
+		}
+
+		if (showRegionFrontiers) {
+			Gizmos.color = Color.black;
+
+			regionBoundaries.Keys.ToList().ForEach(point => {
+				regionBoundaries[point].ForEach(edge => {
+					Gizmos.DrawLine(GetScaledPosition3D(edge.from), GetScaledPosition3D(edge.to));
+				});
+			});
+        }
+	}
 
 }
 
@@ -343,6 +342,11 @@ public class MapManager : Singleton<MapManager> {
 public struct Edge {
 	public Vector2 from;
 	public Vector2 to;
+
+	public static Edge NORTH_EDGE = new Edge { from = new Vector2(0.0f, 1.0f), to = new Vector2(1.0f, 1.0f) };
+	public static Edge SOUTH_EDGE = new Edge { from = new Vector2(0.0f, 0.0f), to = new Vector2(1.0f, 0.0f) };
+	public static Edge WEST_EDGE = new Edge { from = new Vector2(0.0f, 0.0f), to = new Vector2(0.0f, 1.0f) };
+	public static Edge EAST_EDGE = new Edge { from = new Vector2(1.0f, 1.0f), to = new Vector2(1.0f, 0.0f) };
 
 	public override bool Equals(object obj) {
 		return obj is Edge e && ((e.from == this.from && e.to == this.to) || (e.from == this.to && e.to == this.from));

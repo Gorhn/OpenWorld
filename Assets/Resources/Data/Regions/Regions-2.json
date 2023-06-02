@@ -1,0 +1,52 @@
+{
+"regions": [
+ {
+   "id": 7,
+   "name": "REGION_NAME",
+   "x": 0.598,
+   "y": 0.041
+ },
+ {
+   "id": 14,
+   "name": "REGION_NAME",
+   "x": 0.407,
+   "y": 0.128
+ },
+ {
+   "id": 22,
+   "name": "REGION_NAME",
+   "x": 0.067,
+   "y": 0.162
+ },
+ {
+   "id": 32,
+   "name": "REGION_NAME",
+   "x": 0.925,
+   "y": 0.274
+ },
+ {
+   "id": 42,
+   "name": "REGION_NAME",
+   "x": 0.767,
+   "y": 0.338
+ },
+ {
+   "id": 52,
+   "name": "REGION_NAME",
+   "x": 0.562,
+   "y": 0.369
+ },
+ {
+   "id": 66,
+   "name": "REGION_NAME",
+   "x": 0.061,
+   "y": 0.45
+ },
+ {
+   "id": 77,
+   "name": "REGION_NAME",
+   "x": 0.099,
+   "y": 0.575
+ }
+]
+}

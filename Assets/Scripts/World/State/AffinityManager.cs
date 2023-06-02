@@ -19,6 +19,7 @@ public class AffinityManager : Singleton<AffinityManager> {
 
     public override void OnStartServer() {
         state = WorldState.DEFAULT;
+        affinity = GetRandomAffinity();
         ChangeAffinityCoroutine = StartCoroutine(ChangeAffinity());
     }
 

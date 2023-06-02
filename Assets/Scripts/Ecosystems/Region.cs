@@ -11,7 +11,7 @@ public class Region : MonoBehaviour {
     [SerializeField]
     private List<Region> neighbours = new List<Region>();
     [SerializeField]
-    private Vector3 regionCenter;
+    public Vector3 regionCenter;
     [SerializeField]
     private List<Edge> frontiers = new List<Edge>();
     [NonSerialized]
@@ -27,23 +27,6 @@ public class Region : MonoBehaviour {
 
     public void AddAdjacentRegion(Region region) {
         adjacentRegions.Add(region);
-    }
-
-    private void OnDrawGizmos() {
-        Gizmos.color = Color.red;
-        Gizmos.DrawCube(regionCenter, new Vector3(5f, 5f, 5f));
-
-        Gizmos.color = Color.black;
-        frontiers.ForEach(frontier => {
-            Gizmos.DrawLine(new Vector3(frontier.from.x, 0f, frontier.from.y), new Vector3(frontier.to.x, 0f, frontier.to.y));
-        });
-    }
-
-    private void OnDrawGizmosSelected() {
-        Gizmos.color = Color.blue;
-        adjacentRegions.ForEach(region => {
-            Gizmos.DrawLine(regionCenter, region.regionCenter);
-        });
     }
 
 }
